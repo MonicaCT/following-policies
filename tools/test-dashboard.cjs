@@ -4,7 +4,8 @@ const vm = require('node:vm');
 const {webcrypto} = require('node:crypto');
 const {PGlite} = require(require('node:path').resolve(process.env.PGLITE_MODULE));
 const root = require('node:path').join(__dirname,'..');
-const migration = fs.readFileSync(root+'/supabase/migrations/202611140001_dashboard.sql','utf8');
+const migrations = fs.readdirSync(root+'/supabase/migrations').sort()
+  .map(file=>fs.readFileSync(root+'/supabase/migrations/'+file,'utf8'));
 const html = fs.readFileSync(root+'/index.html','utf8');
 const user = {
   responsable:'10000000-0000-0000-0000-000000000001',
@@ -43,7 +44,7 @@ async function run() {
     grant select,insert on storage.objects to authenticated;
     create publication supabase_realtime;
   `);
-  await db.exec(migration);
+  for (const migration of migrations) await db.exec(migration);
   for (const id of Object.values(user)) await db.query('insert into auth.users values($1)',[id]);
   for (const [role,id] of Object.entries(user)) {
     await db.query('insert into dashboard_profiles(id,display_name,role,responsible_name) values($1,$2,$3,$4)',
@@ -118,7 +119,42 @@ async function run() {
     await db.query('select dashboard_assign($1,$2,$3)',[row.id,row.version,JSON.stringify(['Responsable A'])]);
   });
   assert.equal((await as('responsable',()=>get(2))).body.personas[0],'Responsable A');
-  console.log('3 contraseñas de prueba, SQL ejecutable, 4 roles, RLS, adjuntos, observaciones, auditoría, instrucciones y control de versiones: OK.');
+
+  const follow = (row,state,note) => db.query('select dashboard_follow_instruction($1,$2,$3,$4,$5)',
+    [row.id,row.version,0,state,note]);
+  const beforeFollow = await as('ministro',()=>get(1));
+  await as('responsable',async()=>{
+    await assert.rejects(follow(beforeFollow,'En seguimiento','Intento sin autorización'),error=>error.code==='42501');
+    await assert.rejects(db.query("select dashboard_save_unit('DGP','Planificación',true,null)"),error=>error.code==='42501');
+  });
+  await as('comite',async()=>{
+    await assert.rejects(follow(beforeFollow,'Resuelta','Cierre no autorizado'),error=>error.code==='42501');
+    await follow(beforeFollow,'En seguimiento','Validación en curso');
+  });
+  await as('ministro',async()=>{
+    await assert.rejects(follow(beforeFollow,'Resuelta','Versión anterior'),error=>error.code==='40001');
+    await follow(await get(1),'Resuelta','El Comité completó la validación');
+    const stored=(await get(1)).body.instrucciones[0];
+    assert.equal(stored.estado,'Resuelta');
+    assert.deepEqual(stored.seguimiento.map(event=>[event.estado,event.rol]),[['En seguimiento','comite'],['Resuelta','ministro']]);
+    await follow(await get(1),'En seguimiento','Se requiere revisión adicional');
+  });
+  await as('admin',async()=>{
+    await db.query("select dashboard_save_unit('DGP','Planificación',true,null)");
+    await assert.rejects(db.query("select dashboard_save_unit('DGP','Otra alta',true,null)"),error=>error.code==='40001');
+    await db.query("select dashboard_save_unit('DGP','Dirección de Planificación',true,1)");
+    await assert.rejects(db.query("select dashboard_save_unit('DGP','Cambio anterior',true,1)"),error=>error.code==='40001');
+    const row=await get(2);
+    await db.query("select dashboard_set_unit($1,$2,'DGP')",[row.id,row.version]);
+    await db.query("select dashboard_save_unit('DGP','Dirección de Planificación',false,2)");
+    await assert.rejects(db.query("select dashboard_set_unit($1,$2,'DGP')",[row.id,row.version+1]),error=>error.code==='22023');
+  });
+  await as('responsable',async()=>{
+    assert.equal((await get(2)).body.unidad,'DGP');
+    const unit=(await db.query("select label,active from dashboard_units where code='DGP'")).rows[0];
+    assert.deepEqual(unit,{label:'Dirección de Planificación',active:false});
+  });
+  console.log('3 contraseñas de prueba, SQL ejecutable, 4 roles, RLS, adjuntos, observaciones, auditoría, seguimiento de instrucciones, catálogos y control de versiones: OK.');
 }
 
 run().catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>db.close());

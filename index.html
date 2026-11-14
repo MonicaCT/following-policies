@@ -719,7 +719,27 @@ async function login(publicView=false) {
     button.disabled = false;
   }
   openDashboard(profile, name, assignment, publicView);
+  if (!publicView && !githubPages) addLocalExport();
 }
+function addLocalExport() {
+  if ($('localExport')) return;
+  const button = document.createElement('button');
+  button.id = 'localExport';
+  button.className = 'secondary';
+  button.type = 'button';
+  button.textContent = 'Exportar fichas de este navegador';
+  button.addEventListener('click', () => {
+    const records = role==='responsable'?visible():data;
+    const url = URL.createObjectURL(new Blob([JSON.stringify(records,null,2)],{type:'application/json'}));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'fichas-seguimiento-'+new Date().toISOString().replace(/[:.]/g,'-')+'.json';
+    link.click();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  });
+  document.querySelector('.section-nav').after(button);
+}
+
 function openDashboard(profile, name, assignment, publicView=false) {
   readOnly=publicView;
   role=profile;
@@ -860,20 +880,26 @@ function deliveryStatus(t) {
 }
 
 
+function unitLabel(code) {
+  const unit = sharedUnits.find(item=>item.code===code);
+  return unit ? unit.label + (unit.active?'':' (inactiva)') : code;
+}
+
 function render(){
   const all = visible();
-  const units = [...new Set(all.map(t => t.unidad).filter(Boolean))].sort((a,b) => a.localeCompare(b,'es'));
+  const units = [...new Set(all.map(t => t.unidad).filter(Boolean))].sort((a,b) => unitLabel(a).localeCompare(unitLabel(b),'es'));
 
   if(role==='responsable'&&units.length===1){
-    $('unit').replaceChildren(new Option(units[0],units[0]));
+    $('unit').replaceChildren(new Option(unitLabel(units[0]),units[0]));
     $('unit').value=units[0];
   }else{
     setOptions('unit',role==='responsable'?'Mis unidades':'Todas las unidades',units);
   }
+  for (const option of $('unit').options) if (option.value) option.textContent=unitLabel(option.value);
   const group = all.filter(t => !$('unit').value || t.unidad === $('unit').value);
   const people = [...new Set(group.flatMap(t => t.personas).filter(Boolean))].sort((a,b) => a.localeCompare(b,'es'));
   setOptions('person', role === 'responsable' && assignedGroup ? assignedGroup : 'Todos los responsables', role === 'responsable' ? [] : people);
-  let q=$('search').value.toLowerCase();let rows=all.filter(t=>{let d=record(t);let al=$('alertFilter').value;return (!$('unit').value||t.unidad===$('unit').value)&&(!$('commitment').value||({conflicto:t.conflicto==='1',anunciado:t.anunciado==='1',entrega:t.entrega2026==='1',triple:t.conflicto==='1'&&t.anunciado==='1'&&t.entrega2026==='1'})[$('commitment').value])&&(topicCode(t)+' '+t.tema+' '+visibleProduct(t)+' '+t.responsable+' '+t.unidad+' '+d.texto+' '+d.riesgo+' '+d.siguiente).toLowerCase().includes(q)&&(!$('person').value||t.personas.includes($('person').value))&&(!al||(al==='none'?!automaticAlert(t):automaticAlert(t)===al))});sortTopicRows(rows);currentRows=rows;renderSelection(rows);renderNotificationCount();$('list').innerHTML='<div class="tablewrap"><table><thead><tr>'+topicHeadings()+'<th>Situación actual</th>'+sortHeading('progress','Hitos y avance')+sortHeading('alert','Semáforo')+'<th>Documentos</th><th>Imprimir</th><th>Observaciones del Comité</th></tr></thead><tbody>'+rows.map((t,index)=>{const [,label]=situationAction(t);return '<tr><td>'+(index+1)+'</td><td>'+topicCode(t)+'</td><td><strong>'+esc(t.tema)+'</strong><br><small>'+esc(t.unidad)+'</small></td><td>'+esc(t.responsable)+'</td><td>'+esc(visibleProduct(t))+(role==='comite'?'<br><small>Anunciado: '+flag(t.anunciado)+' · Conflicto: '+flag(t.conflicto)+' · Entrega 2026: '+flag(t.entrega2026)+'</small>':'')+'</td><td>'+esc((role==='ministro'?t.publicado?.fecha:t.fecha)||'Por confirmar')+(role==='responsable'&&t.fechaConfirmada?'<br><small>'+esc(deadlineText(t))+'</small>':'')+'</td><td><button class="cellbutton read-only" onclick="sectionDetail('+t.id+',2)">'+label+'</button>'+updateMetadata(t)+'</td><td><button class="cellbutton read-only" onclick="showMilestones('+t.id+')">Ver hitos</button><small class="update-meta">'+progressLabel(t)+'</small></td><td>'+alertBadge(t)+deliveryStatus(t)+'</td><td>'+(!readOnly?'<button class="cellbutton read-only" onclick="attachments('+t.id+')">Ver documentos</button>':'—')+'</td><td><button class="cellbutton print-action" onclick="printReport('+t.id+')">Imprimir ficha</button></td><td><button class="cellbutton'+(canObserve(t)?' can-edit':' read-only')+'" onclick="sectionDetail('+t.id+',3)">Observaciones del Comité'+(role!=='ministro'&&t.subsanacion?' · Con plazo':'')+'</button>'+(role!=='ministro'&&t.subsanacion?'<br><span class="deadline">Subsanar: '+esc(t.subsanacion)+'</span>':'')+'</td></tr>'}).join('')+'</tbody></table></div>'}
+  let q=$('search').value.toLowerCase();let rows=all.filter(t=>{let d=record(t);let al=$('alertFilter').value;return (!$('unit').value||t.unidad===$('unit').value)&&(!$('commitment').value||({conflicto:t.conflicto==='1',anunciado:t.anunciado==='1',entrega:t.entrega2026==='1',triple:t.conflicto==='1'&&t.anunciado==='1'&&t.entrega2026==='1'})[$('commitment').value])&&(topicCode(t)+' '+t.tema+' '+visibleProduct(t)+' '+t.responsable+' '+t.unidad+' '+d.texto+' '+d.riesgo+' '+d.siguiente).toLowerCase().includes(q)&&(!$('person').value||t.personas.includes($('person').value))&&(!al||(al==='none'?!automaticAlert(t):automaticAlert(t)===al))});sortTopicRows(rows);currentRows=rows;renderSelection(rows);renderNotificationCount();$('list').innerHTML='<div class="tablewrap"><table><thead><tr>'+topicHeadings()+'<th>Situación actual</th>'+sortHeading('progress','Hitos y avance')+sortHeading('alert','Semáforo')+'<th>Documentos</th><th>Imprimir</th><th>Observaciones del Comité</th></tr></thead><tbody>'+rows.map((t,index)=>{const [,label]=situationAction(t);return '<tr><td>'+(index+1)+'</td><td>'+topicCode(t)+'</td><td><strong>'+esc(t.tema)+'</strong><br><small>'+esc(unitLabel(t.unidad))+'</small></td><td>'+esc(t.responsable)+'</td><td>'+esc(visibleProduct(t))+(role==='comite'?'<br><small>Anunciado: '+flag(t.anunciado)+' · Conflicto: '+flag(t.conflicto)+' · Entrega 2026: '+flag(t.entrega2026)+'</small>':'')+'</td><td>'+esc((role==='ministro'?t.publicado?.fecha:t.fecha)||'Por confirmar')+(role==='responsable'&&t.fechaConfirmada?'<br><small>'+esc(deadlineText(t))+'</small>':'')+'</td><td><button class="cellbutton read-only" onclick="sectionDetail('+t.id+',2)">'+label+'</button>'+updateMetadata(t)+'</td><td><button class="cellbutton read-only" onclick="showMilestones('+t.id+')">Ver hitos</button><small class="update-meta">'+progressLabel(t)+'</small></td><td>'+alertBadge(t)+deliveryStatus(t)+'</td><td>'+(!readOnly?'<button class="cellbutton read-only" onclick="attachments('+t.id+')">Ver documentos</button>':'—')+'</td><td><button class="cellbutton print-action" onclick="printReport('+t.id+')">Imprimir ficha</button></td><td><button class="cellbutton'+(canObserve(t)?' can-edit':' read-only')+'" onclick="sectionDetail('+t.id+',3)">Observaciones del Comité'+(role!=='ministro'&&t.subsanacion?' · Con plazo':'')+'</button>'+(role!=='ministro'&&t.subsanacion?'<br><span class="deadline">Subsanar: '+esc(t.subsanacion)+'</span>':'')+'</td></tr>'}).join('')+'</tbody></table></div>'}
 
 
 const situationFields = [['texto','Situación actual'],['riesgo','Dificultades'],['siguiente','Próximo paso'],['evidencia','Documento o enlace']];
@@ -1035,8 +1061,7 @@ function openDetail(id,editing=false,from='') {
     role==='ministro'&&!readOnly&&t.publicado?'<label for="comentario">'+(window.dashboardBackend?'Instrucción del Despacho':'Orientación')+'</label><textarea id="comentario"></textarea><button onclick="orient()">'+(window.dashboardBackend?'Registrar instrucción':'Guardar orientación')+'</button> ':'';
   showDialog('<small>'+topicCode(t)+'</small><h2>'+esc(t.tema)+'</h2><p><strong>Producto:</strong> '+esc(visibleProduct(t))+'</p>'+
     '<p>'+esc(t.responsable)+' · '+esc((role==='ministro'?t.publicado?.fecha:t.fecha)||'Fecha por confirmar')+'</p>'+correction+
-    (t.instrucciones?.length?'<h3>Instrucciones del Despacho</h3>'+t.instrucciones.map(item=>
-      '<p><strong>'+esc(item.estado)+'</strong> · '+esc(item.texto)+'</p>').join(''):'')+
+    instructionPanel(t)+
     '<section class="panel"><h3>Situación actual</h3>'+updateMetadata(t)+
     '<p>Se genera con el avance acumulado de los hitos. <strong>'+progressLabel(t)+'</strong> · '+alertBadge(t)+'</p>'+milestoneTable(t,editable,canObserve(t))+milestoneReviewButton(t,'ficha')+
     (d.riesgo?'<p><strong>Dificultades:</strong> '+esc(d.riesgo)+'</p>':'')+
@@ -1149,6 +1174,41 @@ async function review() {
     historial:[...(t.publicado?.historial||[]),{...t.historial.at(-1),situacion:record(t),
       responsable:approvedEntry?.actor,producto:t.producto,hitosCambios:milestoneChanges(t.publicado?.hitos||[],t.hitos)}]});
   if(await save()){detail.close();render();notifySuccess('Ficha aprobada y enviada al Despacho.');}
+}
+
+function instructionStates(state) {
+  if (!window.dashboardBackend || readOnly || !['comite','ministro'].includes(role)) return [];
+  const states = state==='Pendiente' || (role==='ministro' && state==='Resuelta') ? ['En seguimiento'] : [];
+  if (role==='ministro' && ['Pendiente','En seguimiento'].includes(state)) states.push('Resuelta');
+  return states;
+}
+
+function instructionPanel(t) {
+  if (!t.instrucciones?.length) return '';
+  return '<section><h3>Instrucciones del Despacho</h3>'+t.instrucciones.map((item,index)=>
+    '<article class="panel"><p><strong>'+esc(item.estado)+'</strong> · '+esc(item.texto)+'</p>'+
+    (item.seguimiento?.length?'<details><summary>Historial de seguimiento</summary>'+item.seguimiento.map(change=>
+      '<p><strong>'+esc(change.anterior)+' → '+esc(change.estado)+'</strong> · '+esc(change.actor)+' · '+
+      esc(new Date(change.fecha).toLocaleString('es-BO'))+'<br>'+esc(change.nota)+'</p>').join('')+'</details>':'')+
+    (instructionStates(item.estado).length?'<button type="button" class="secondary" onclick="openInstructionFollowup('+t.id+','+index+')">Actualizar estado</button>':'')+
+    '</article>').join('')+'</section>';
+}
+
+function openInstructionFollowup(id,index) {
+  const item = visible().find(row=>row.id===id)?.instrucciones?.[index];
+  if (!item) return;
+  const states = instructionStates(item.estado);
+  if (!states.length) return;
+  showDialog('<h2>Seguimiento de instrucción</h2><p>'+esc(item.texto)+'</p><form id="instructionForm">'+
+    '<label for="instructionState">Estado</label><select id="instructionState" required>'+
+    states.map(state=>'<option>'+esc(state)+'</option>').join('')+'</select>'+
+    '<label for="instructionNote">Motivo o avance</label><textarea id="instructionNote" maxlength="2000" required></textarea>'+
+    '<button>Guardar seguimiento</button></form>',()=>openDetail(id));
+  $('instructionForm').onsubmit = async event => {
+    event.preventDefault();
+    await saveAdministration(event,()=>window.dashboardBackend.followInstruction(id,index,
+      $('instructionState').value,$('instructionNote').value.trim()),'Seguimiento de instrucción guardado.');
+  };
 }
 
 async function orient(){
@@ -1766,10 +1826,11 @@ window.addEventListener('afterprint',()=>document.body.classList.remove('printin
 
 let sharedUpdatePending = false;
 let sharedRefreshRunning = false;
+let sharedUnits = [];
 
 async function loadSharedRecords() {
-  const rows = await window.dashboardBackend.records();
-  data = rows;
+  sharedUnits = await window.dashboardBackend.units();
+  data = await window.dashboardBackend.records();
   enrich();
   savedData = structuredClone(data);
 }
@@ -1856,6 +1917,62 @@ function addSharedControls() {
   manage.textContent = 'Administrar perfiles y asignaciones';
   manage.addEventListener('click',openAdministration);
   auditButton.after(manage);
+  const catalog = document.createElement('button');
+  catalog.type = 'button';
+  catalog.className = 'secondary';
+  catalog.textContent = 'Administrar catálogo de unidades';
+  catalog.addEventListener('click',openUnitCatalog);
+  manage.after(catalog);
+}
+
+async function openUnitCatalog() {
+  try {
+    const registered = await window.dashboardBackend.units();
+    const units = new Map(registered.map(item=>[item.code,item]));
+    for (const {unidad} of data) {
+      if (unidad && !units.has(unidad)) units.set(unidad,{code:unidad,label:unidad,active:true,version:null});
+    }
+    const sorted = [...units.values()].sort((a,b)=>a.label.localeCompare(b.label,'es'));
+    const active = registered.filter(unit=>unit.active);
+    showDialog('<h2>Catálogo de unidades</h2><form id="catalogForm">'+
+      '<label for="catalogExisting">Unidad</label><select id="catalogExisting"><option value="">Nueva unidad</option>'+
+      sorted.map(unit=>'<option value="'+esc(unit.code)+'">'+esc(unit.label)+(unit.active?'':' (inactiva)')+'</option>').join('')+
+      '</select><label for="catalogCode">Código de unidad</label><input id="catalogCode" required maxlength="160">'+
+      '<label for="catalogLabel">Nombre visible</label><input id="catalogLabel" required maxlength="160">'+
+      '<label><input id="catalogActive" type="checkbox" checked> Unidad activa</label><button>Guardar unidad</button></form>'+
+      (active.length?'<hr><form id="catalogAssign"><label for="catalogTopic">Compromiso</label><select id="catalogTopic">'+
+        documentTopicsOptions(data,data[0]?.id)+'</select><label for="catalogNewUnit">Unidad activa</label>'+
+        '<select id="catalogNewUnit" required><option value="">Seleccione una unidad</option>'+
+        active.map(unit=>'<option value="'+esc(unit.code)+'">'+esc(unit.label)+'</option>').join('')+
+        '</select><button>Asignar unidad</button></form>':'<p>Registre una unidad activa para asignarla a una ficha.</p>')+
+      '<button class="secondary" onclick="detail.close()">Cerrar</button>');
+    const existing = $('catalogExisting');
+    existing.onchange = () => {
+      const unit = units.get(existing.value);
+      $('catalogCode').readOnly = Boolean(unit);
+      $('catalogCode').value = unit?.code||'';
+      $('catalogLabel').value = unit?.label||'';
+      $('catalogActive').checked = unit?.active??true;
+    };
+    $('catalogForm').onsubmit = async event => {
+      event.preventDefault();
+      await saveAdministration(event,()=>window.dashboardBackend.saveUnit($('catalogCode').value.trim(),
+        $('catalogLabel').value.trim(),$('catalogActive').checked,units.get(existing.value)?.version??null),'Catálogo guardado.');
+    };
+    if ($('catalogAssign')) {
+      const topic = $('catalogTopic');
+      topic.onchange = () => {
+        const code = data.find(row=>row.id===Number(topic.value))?.unidad;
+        $('catalogNewUnit').value = active.some(unit=>unit.code===code)?code:'';
+      };
+      topic.onchange();
+      $('catalogAssign').onsubmit = async event => {
+        event.preventDefault();
+        await saveAdministration(event,()=>window.dashboardBackend.setUnit(Number(topic.value),
+          $('catalogNewUnit').value),'Unidad asignada a la ficha.');
+      };
+    }
+  } catch (error) { showError(error.message); }
 }
 
 async function openAdministration() {

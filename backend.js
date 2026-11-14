@@ -62,6 +62,7 @@
     subscribe(onUpdate) {
       channel = client.channel('dashboard-commitments')
         .on('postgres_changes',{event:'*',schema:'public',table:'dashboard_commitments'}, onUpdate)
+        .on('postgres_changes',{event:'*',schema:'public',table:'dashboard_units'}, onUpdate)
         .subscribe(status => { if (status === 'SUBSCRIBED') onUpdate(); });
     },
     async disconnect() {
@@ -70,6 +71,23 @@
       profile = null;
       versions.clear();
       if (client) await client.auth.signOut({scope:'local'});
+    },
+    async units() {
+      return checked(await client.from('dashboard_units').select('code,label,active,version').order('code'),
+        'No se pudo consultar el catálogo de unidades.');
+    },
+    async saveUnit(code,label,active,version) {
+      checked(await client.rpc('dashboard_save_unit',{p_code:code,p_label:label,p_active:active,p_version:version}),
+        'No se pudo guardar la unidad. Revise el código y el nombre.');
+    },
+    async setUnit(id,code) {
+      checked(await client.rpc('dashboard_set_unit',{p_id:id,p_version:versions.get(id),p_code:code}),
+        'No se pudo asignar la unidad. Verifique que esté activa.');
+    },
+    async followInstruction(id,index,state,note) {
+      checked(await client.rpc('dashboard_follow_instruction',{
+        p_id:id,p_version:versions.get(id),p_index:index,p_state:state,p_note:note
+      }), 'No se pudo actualizar la instrucción. Revise el estado y el motivo.');
     },
     async profiles() {
       return checked(await client.from('dashboard_profiles').select('id,display_name,role,responsible_name,active')
