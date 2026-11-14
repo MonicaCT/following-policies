@@ -745,12 +745,12 @@ function openDashboard(profile, name, assignment, publicView=false) {
   role=profile;
   sessionIdentity=name;
   assignedGroup=assignment;
-  $('loginPassword').value='';
+  if ($('loginPassword')) $('loginPassword').value='';
 document.body.dataset.role=role;$('actorName').value=sessionIdentity;$('actorName').readOnly=true;document.querySelector('.identity').hidden=true;$('assignedName').hidden=role!=='responsable';$('assignedName').textContent=assignment;$('person').hidden=role==='responsable';$('attachmentUploadButton').hidden=role!=='responsable';document.querySelector('.identity label').textContent='Nombre de quien opera';$('unit').innerHTML='<option value="">Todas las unidades</option>'+[...new Set(data.map(t=>t.unidad))].filter(Boolean).sort().map(u=>'<option>'+esc(u)+'</option>').join('');$('commitment').hidden=role==='responsable';$('login').classList.add('hide');$('app').classList.remove('hide');$('who').textContent={responsable:'01 · Responsable',comite:'02 · Comité de seguimiento',ministro:'Despacho del Ministro',admin:'Administración'}[role];$('title').textContent={responsable:'Seguimiento de compromisos',comite:'Revisión y acompañamiento de compromisos',ministro:'Resumen ejecutivo de compromisos',admin:'Administración del seguimiento'}[role];$('intro').textContent={responsable:'Registre la situación de sus temas y envíela al comité para su revisión.',comite:'Revise los temas y comunique las correcciones necesarias.',ministro:'Consulte los temas, su situación actual y su historial.',admin:'Consulte las fichas y el historial de auditoría.'}[role];$('person').innerHTML='<option value="">Todos los responsables</option>'+[...new Set(data.map(t=>t.responsable))].map(p=>`<option>${esc(p)}</option>`).join('');if (readOnly) { $('who').textContent='Consulta pública'; document.querySelector('.identity').hidden=true; } $('refreshRecords').hidden=false; $('printChangesButton').hidden=readOnly||!['comite','ministro','admin'].includes(role);$('topicsTitle').textContent=role==='responsable'?'Sección 3 · Temas de seguimiento':role==='comite'?'Sección 3 · Bandeja de revisión':'Sección 3 · Fichas aprobadas'; $('topicsNav').textContent=role==='responsable'?'3 · Temas':'3 · Bandeja';switchSection(3);render();if(role!=='admin')usageInstructions();}
 function visible(){
   if(role==='responsable')return data.filter(t=>t.personas.includes(assignedGroup));
   if(role==='admin')return data;
-  if(role==='comite'&&window.dashboardBackend)return data;
+  if(['comite','ministro'].includes(role)&&window.dashboardBackend)return data;
   if(role==='comite')return data.filter(t=>t.solicitudBase?.estado==='Pendiente'||['En revisión','Observado'].includes(t.etapa));
   return data.filter(t=>t.publicado);
 }function resetFilters(){['search','person','unit','commitment','alertFilter'].forEach(k=>$(k).value='');topicSort={key:'id',direction:1};render()}
@@ -979,7 +979,7 @@ function record(t) {
   return {...source,texto};
 }
 
-function viewMilestones(t) { return role === 'ministro' ? (t.publicado?.hitos || []) : t.hitos; }
+function viewMilestones(t) { return role === 'ministro' && !window.dashboardBackend ? (t.publicado?.hitos || []) : t.hitos; }
 function clearObservation(t) { t.observacionComite='';t.subsanacion='';t.observacionAutor='';t.observacionFecha='';t.hitosObservados=[];t.hitosObservadosBase={}; }
 function canObserve(t) { return role==='comite' && (t.solicitudBase?.estado==='Pendiente'||['En revisión','Observado'].includes(t.etapa)); }
 function canEdit(t) { return role === 'responsable' && t.personas.includes(assignedGroup); }
@@ -1052,7 +1052,8 @@ function openDetail(id,editing=false,from='') {
   const options=editable?
     '<button onclick="update(false)">Guardar como borrador</button> <button id="sendWork" onclick="update(true)" '+(t.pendienteEnvio&&summary?'':'disabled')+'>Enviar al Comité</button> '+
     (request?.estado==='Pendiente'?'<p class="note">Solicitud de cambio de datos base pendiente.</p>':
-      '<button onclick="requestBaseChange('+id+')">Solicitar cambio de datos base</button> '):
+      '<button onclick="requestBaseChange('+id+')" aria-describedby="requestHelp">Solicitar cambio de datos base</button> '+
+      '<p class="note" id="requestHelp">Solicite al Comité modificaciones de hitos, cronograma, productos o fechas. Los cambios requieren revisión y aprobación.</p>'):
     own?'<button class="can-edit" onclick="openDetail('+id+',true,&quot;ficha&quot;)">Editar</button> ':
     role==='comite'?
       '<p class="note">La ficha del responsable es de solo lectura. Puede registrar observaciones con fecha límite y aprobar el envío al Despacho.</p>'+
@@ -1083,7 +1084,7 @@ function requestBaseChange(id) {
   if(!t||!canEdit(t)||needsSetup(t)||t.solicitudBase?.estado==='Pendiente')return;
   if(situationRequired&&!confirm('Hay avances sin guardar. ¿Descartarlos y abrir la solicitud?'))return;
   situationRequired=false;
-  showDialog('<h2>Solicitar cambio de datos base</h2><p>Solicite al Comité los cambios de hitos, cronograma, productos o fechas ya confirmados. Indique qué necesita cambiar y por qué. El Comité puede habilitar la edición hasta una fecha.</p>'+
+  showDialog('<h2>Solicitar cambio de datos base</h2><p>Indique qué necesita cambiar y por qué. El Comité puede habilitar la edición hasta una fecha.</p>'+
     '<label for="baseReason">Motivo (obligatorio)</label><textarea id="baseReason" required></textarea>'+
     '<button onclick="submitBaseRequest('+id+')">Enviar solicitud</button> <button class="secondary" onclick="goBack()">Cancelar</button>',()=>openDetail(id));
 }
@@ -1809,12 +1810,22 @@ function sortMilestoneColumn(button,key) {
   });
   body.append(...rows);
 }
-function printChanges(id) {
+async function printChanges(id) {
   if(!['comite','ministro','admin'].includes(role)||readOnly)return;
-  const accessible=role==='ministro'?visible():data;
-  const rows=typeof id==='number'?accessible.filter(t=>t.id===id):accessible.filter(t=>t.historial.length||t.publicado?.historial?.length);
+  const rows = typeof id==='number' ? visible().filter(t=>t.id===id) : [...currentRows];
+  let byCommitment = new Map();
+  if (window.dashboardBackend) {
+    try {
+      byCommitment = await window.dashboardBackend.auditFor(rows.map(t=>t.id));
+    } catch (error) {
+      showError(error.message);
+      return;
+    }
+  }
+  const entries = rows.filter(t=>historyEntries(t).length||byCommitment.has(t.id));
   $('report').innerHTML='<div class="report-heading"><div><p>MINISTERIO DE EDUCACIÓN</p><h1>Historial de cambios</h1></div></div>'+
-    (rows.length?rows.map(t=>'<article class="full-topic"><h2>'+topicCode(t)+' · '+esc(t.tema)+'</h2>'+history(t)+'</article>').join(''):
+    (entries.length?entries.map(t=>'<article class="full-topic"><h2>'+topicCode(t)+' · '+esc(t.tema)+'</h2>'+history(t)+
+        (byCommitment.get(t.id)||[]).map(printAuditEntry).join('')+'</article>').join(''):
       '<p>Todavía no hay cambios registrados.</p>')+
     '<p class="report-credit">© MINEDU · Uso interno</p>';
   document.body.classList.add('printing');
@@ -1837,7 +1848,7 @@ async function loadSharedRecords() {
 
 async function queueSharedRefresh() {
   sharedUpdatePending = true;
-  if (detail.open || saving || sharedRefreshRunning || $('refreshRecords').disabled) return;
+  if ($('app').classList.contains('hide') || detail.open || saving || sharedRefreshRunning || $('refreshRecords').disabled) return;
   sharedUpdatePending = false;
   sharedRefreshRunning = true;
   $('app').inert = true;
@@ -1854,7 +1865,94 @@ async function queueSharedRefresh() {
   }
 }
 
+const refreshNotes = {
+  responsable:'Actualiza la información para consultar los últimos cambios registrados por los usuarios autorizados. Esta acción no elimina los datos guardados.',
+  comite:'Permite consultar la información más reciente registrada por los responsables, el comité y el despacho del ministro, sin eliminar los datos guardados.',
+  ministro:'Actualiza los registros para visualizar los últimos avances, observaciones, modificaciones y decisiones incorporados por los usuarios autorizados.'
+};
+
+async function enterSharedDashboard(profile) {
+  await loadSharedRecords();
+  openDashboard(profile.role,profile.display_name,profile.responsible_name||'');
+  document.querySelector('#app .note').textContent = 'Las fichas y los documentos se guardan en la base compartida.';
+  if (profile.role === 'ministro') $('topicsTitle').textContent = 'Sección 3 · Compromisos';
+  $('refreshExplanation').textContent = refreshNotes[profile.role] || $('refreshExplanation').textContent;
+  addSharedControls();
+  window.dashboardBackend.subscribe(queueSharedRefresh);
+  window.addEventListener('focus',queueSharedRefresh);
+  setInterval(() => { if (!document.hidden) queueSharedRefresh(); },30000);
+}
+
 function setupSharedLogin() {
+  $('login').innerHTML = '<h2>Acceso institucional</h2><form id="sharedRoleForm">'+
+    '<label for="role">Perfil</label><select id="role" required><option value="">Seleccione un perfil</option>'+
+    '<option value="responsable">Responsables</option><option value="comite">Comité</option>'+
+    '<option value="ministro">Despacho del Ministro</option></select>'+
+    '<div id="sharedPasswordField" hidden><label for="loginPassword">Contraseña del perfil</label>'+
+    '<input id="loginPassword" type="password" autocomplete="current-password"></div>'+
+    '<div id="assignmentField" hidden><label for="loginAssignment">Nombre del responsable</label>'+
+    '<select id="loginAssignment"></select><p class="note">El historial registra el nombre seleccionado como identidad operativa.</p></div>'+
+    '<p id="error" role="status"></p><button id="sharedLoginButton" disabled>Ingresar</button> '+
+    '<button class="secondary" type="button" id="cancelRole" hidden>Cambiar perfil</button></form>';
+  const profileSelect = $('role'), password = $('loginPassword'), assignment = $('loginAssignment');
+  const button = $('sharedLoginButton'), cancel = $('cancelRole');
+  let choosing = false;
+  profileSelect.onchange = () => {
+    const selected = Boolean(profileSelect.value);
+    $('sharedPasswordField').hidden = !selected;
+    password.required = selected;
+    password.value = '';
+    button.disabled = !selected;
+    $('error').textContent = '';
+    if (selected) password.focus();
+  };
+  cancel.onclick = async () => {
+    cancel.disabled = true;
+    button.disabled = true;
+    try { await window.dashboardBackend.disconnect(); }
+    finally { setupSharedLogin(); }
+  };
+  $('sharedRoleForm').onsubmit = async event => {
+    event.preventDefault();
+    if (button.disabled) return;
+    button.disabled = true;
+    cancel.disabled = true;
+    profileSelect.disabled = true;
+    $('error').textContent = '';
+    try {
+      if (choosing) {
+        const profile = await window.dashboardBackend.selectResponsible(assignment.value);
+        await enterSharedDashboard(profile);
+      } else {
+        const profile = await window.dashboardBackend.connectRole(profileSelect.value,password.value);
+        password.value = '';
+        if (profile.role === 'responsable') {
+          const names = await window.dashboardBackend.responsibleNames();
+          if (!names.length) throw new Error('Aún no hay responsables asociados a las fichas.');
+          assignment.replaceChildren(new Option('Seleccione su nombre',''),...names.map(name=>new Option(name,name)));
+          assignment.required = true;
+          $('assignmentField').hidden = false;
+          $('sharedPasswordField').hidden = true;
+          password.required = false;
+          cancel.hidden = false;
+          choosing = true;
+          assignment.focus();
+        } else {
+          await enterSharedDashboard(profile);
+        }
+      }
+    } catch (error) {
+      if (!choosing) await window.dashboardBackend.disconnect();
+      $('error').textContent = error.message;
+    } finally {
+      button.disabled = false;
+      cancel.disabled = false;
+      profileSelect.disabled = choosing;
+    }
+  };
+}
+
+function setupIndividualLogin() {
   const loginPanel = $('login');
   loginPanel.innerHTML = '<h2>Acceso institucional</h2><form id="sharedLoginForm">'+
     '<label for="sharedEmail">Correo institucional</label><input id="sharedEmail" type="email" required autocomplete="email">'+
@@ -1888,19 +1986,13 @@ function setupSharedLogin() {
         code.focus();
       } else {
         const profile = await window.dashboardBackend.connect(email.value.trim(),code.value.trim());
-        try { await loadSharedRecords(); }
-        catch (error) {await window.dashboardBackend.disconnect();throw error;}
-        openDashboard(profile.role,profile.display_name,profile.responsible_name||'');
-        $('refreshExplanation').textContent = 'Los cambios llegan automáticamente. Use este botón para consultar de nuevo sin perder los filtros.';
-        addSharedControls();
-        window.dashboardBackend.subscribe(queueSharedRefresh);
-        window.addEventListener('focus',queueSharedRefresh);
-        setInterval(() => { if (!document.hidden) queueSharedRefresh(); },30000);
+        await enterSharedDashboard(profile);
       }
-    } catch (error) { $('error').textContent = error.message; }
-    finally { button.disabled = false; }
+    } catch (error) {
+      if (!$('sharedCodeRow').hidden) await window.dashboardBackend.disconnect();
+      $('error').textContent = error.message;
+    } finally { button.disabled = false; }
   };
-  detail.addEventListener('close',() => { if (sharedUpdatePending) queueSharedRefresh(); });
 }
 
 function addSharedControls() {
@@ -2037,13 +2129,20 @@ async function saveAdministration(event, operation, message) {
   finally {if (button) button.disabled = false;}
 }
 
+function printAuditEntry(event) {
+  return '<div class="history-entry"><p>'+esc(new Date(event.happened_at).toLocaleString('es-BO'))+
+    ' · '+esc(event.actor_name)+' ('+esc(event.identity_kind)+') · '+esc(event.actor_role)+
+    ' · '+esc(event.field)+'</p><p>Anterior: '+esc(JSON.stringify(event.old_value))+
+    '</p><p>Nuevo: '+esc(JSON.stringify(event.new_value))+'</p></div>';
+}
+
 async function openAudit() {
   try {
     const events = await window.dashboardBackend.audit();
     showDialog('<h2>Auditoría de cambios</h2><p>Hasta 500 cambios recientes que puede consultar su perfil.</p>'+
       events.map(event=>'<details><summary>Ficha '+esc(event.commitment_id)+' · '+esc(event.field)+' · '+
         esc(event.actor_name)+' · '+esc(new Date(event.happened_at).toLocaleString('es-BO'))+'</summary>'+
-        '<p>'+esc(event.actor_role)+' · '+esc(event.operation)+'</p><strong>Valor anterior</strong><pre>'+esc(JSON.stringify(event.old_value,null,2))+
+        '<p>'+esc(event.actor_role)+' · Identidad '+esc(event.identity_kind)+' · '+esc(event.operation)+'</p><strong>Valor anterior</strong><pre>'+esc(JSON.stringify(event.old_value,null,2))+
         '</pre><strong>Valor nuevo</strong><pre>'+esc(JSON.stringify(event.new_value,null,2))+'</pre></details>').join('')+
       '<button onclick="detail.close()">Cerrar</button>');
   } catch (error) {showError(error.message);}
@@ -2067,8 +2166,14 @@ document.addEventListener('invalid',event=>{
   event.target.focus();
 },true);
 
-if (window.dashboardBackend) setupSharedLogin();
-else if (githubPages) {
+const institutionalBuild = false;
+if (window.dashboardBackend) {
+  if (new URLSearchParams(location.search).has('acceso-individual')) setupIndividualLogin();
+  else setupSharedLogin();
+  detail.addEventListener('close',() => { if (sharedUpdatePending) queueSharedRefresh(); });
+} else if (institutionalBuild) {
+  $('login').textContent = 'El acceso institucional no está disponible. Intente de nuevo más tarde.';
+} else if (githubPages) {
   $('error').insertAdjacentHTML('beforebegin',
     '<label for="githubCredential">Credencial de GitHub para edición</label><input type="password" id="githubCredential" autocomplete="off">'+
     '<p><button type="button" class="secondary" onclick="login(true)">Consultar registros públicos</button></p>');

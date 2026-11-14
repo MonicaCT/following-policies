@@ -34,7 +34,10 @@ async function run() {
   await db.exec(`
     create role authenticated; create role anon;
     create schema auth; create schema storage;
-    create table auth.users(id uuid primary key);
+    create table auth.users(id uuid primary key,email text,phone text,encrypted_password text);
+    create table auth.sessions(id uuid primary key,user_id uuid references auth.users);
+    create function auth.jwt() returns jsonb language sql stable as
+      'select coalesce(nullif(current_setting(''request.jwt.claims'',true),''''),''{}'')::jsonb';
     create function auth.uid() returns uuid language sql stable as
       'select nullif(current_setting(''request.jwt.claim.sub'',true),'''')::uuid';
     grant usage on schema auth,storage to authenticated;
@@ -154,6 +157,45 @@ async function run() {
     const unit=(await db.query("select label,active from dashboard_units where code='DGP'")).rows[0];
     assert.deepEqual(unit,{label:'Dirección de Planificación',active:false});
   });
+  const sessions = ['20000000-0000-0000-0000-000000000001','20000000-0000-0000-0000-000000000002'];
+  await db.query("update dashboard_profiles set shared_access=true where id=$1",[user.responsable]);
+  await assert.rejects(db.query("update auth.users set encrypted_password='replacement' where id=$1",
+    [user.responsable]),error=>error.code==='42501');
+  for (const session of sessions) await db.query('insert into auth.sessions values($1,$2)',[session,user.responsable]);
+  await db.query("update dashboard_commitments set body=jsonb_set(body,'{personas}','[\"Responsable B\"]') where id=2");
+  async function useSession(session, callback) {
+    await db.query("select set_config('request.jwt.claims',$1,false)",[JSON.stringify({session_id:session})]);
+    return as('responsable',callback);
+  }
+  await useSession(sessions[0],async()=>{
+    assert.deepEqual((await db.query('select id from dashboard_commitments')).rows,[]);
+    assert.deepEqual((await db.query('select dashboard_responsible_options() as names')).rows[0].names,
+      ['Responsable A','Responsable B']);
+    await assert.rejects(db.query("select dashboard_select_responsible('Otra persona')"),error=>error.code==='42501');
+    await db.query("select dashboard_select_responsible('Responsable A')");
+    await assert.rejects(db.query("select dashboard_select_responsible('Responsable B')"),error=>error.code==='42501');
+    assert.deepEqual((await db.query('select id from dashboard_commitments')).rows.map(row=>row.id),[1]);
+    const row = await get(1);
+    const edited = structuredClone(row.body);
+    edited.hitos[0].hecho = false;
+    await db.query('select dashboard_save($1,$2,$3)',[row.id,row.version,edited]);
+  });
+  await useSession(sessions[1],async()=>{
+    assert.deepEqual((await db.query('select id from dashboard_commitments')).rows,[]);
+    await db.query("select dashboard_select_responsible('Responsable B')");
+    assert.deepEqual((await db.query('select id from dashboard_commitments')).rows.map(row=>row.id),[2]);
+  });
+  await as('comite', async()=>{
+    const audit = (await db.query("select actor_name,identity_kind from dashboard_audit where field='hitos' order by id desc limit 1")).rows[0];
+    assert.deepEqual(audit,{actor_name:'Responsable A',identity_kind:'operativa'});
+    await assert.rejects(db.query("select dashboard_select_responsible('Responsable A')"),error=>error.code==='42501');
+  });
+  await db.query('delete from auth.sessions where id=$1',[sessions[0]]);
+  await useSession(sessions[0],async()=>{
+    assert.deepEqual((await db.query('select id from dashboard_commitments')).rows,[]);
+    await assert.rejects(db.query("select dashboard_select_responsible('Responsable A')"),error=>error.code==='42501');
+  });
+  console.log('Acceso compartido, aislamiento entre sesiones, revocación, protección de contraseñas y auditoría operativa: OK.');
   console.log('3 contraseñas de prueba, SQL ejecutable, 4 roles, RLS, adjuntos, observaciones, auditoría, seguimiento de instrucciones, catálogos y control de versiones: OK.');
 }
 

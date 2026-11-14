@@ -5,10 +5,13 @@
   let profile;
   let channel;
   const versions = new Map();
+  const auditFields = 'id,commitment_id,actor_name,actor_role,identity_kind,happened_at,field,old_value,new_value,operation';
 
   async function initialize() {
     const { createClient } = await import('https://esm.sh/@supabase/supabase-js@2.49.4');
-    client = createClient(config.url, config.publishableKey, { auth: { persistSession: false } });
+    client = createClient(config.url, config.publishableKey, {
+      auth: { persistSession:false,detectSessionInUrl:false }
+    });
   }
 
   function checked(result, message) {
@@ -18,7 +21,40 @@
     return result.data;
   }
 
+  async function loadProfile(user) {
+    const access = checked(await client.from('dashboard_profiles')
+      .select('display_name,role,responsible_name,shared_access').eq('id',user.id).single(),
+    'Su cuenta aún no tiene un perfil activo.');
+    return access;
+  }
+
   window.dashboardBackend = {
+    async connectRole(role, password) {
+      if (!client) await initialize();
+      const email = config.roleAccounts?.[role];
+      if (!email) throw new Error('El acceso de este perfil aún no está configurado.');
+      const {user} = checked(await client.auth.signInWithPassword({email,password}),
+        'No se pudo iniciar sesión con la contraseña de este perfil.');
+      try {
+        const access = await loadProfile(user);
+        if (access.role !== role || !access.shared_access) throw new Error('El perfil no está configurado correctamente.');
+        profile = access;
+        return profile;
+      } catch (error) {
+        await this.disconnect();
+        throw error;
+      }
+    },
+    async responsibleNames() {
+      return checked(await client.rpc('dashboard_responsible_options'),
+        'No se pudo consultar la lista de responsables.');
+    },
+    async selectResponsible(name) {
+      checked(await client.rpc('dashboard_select_responsible',{p_name:name}),
+        'No se pudo seleccionar el responsable.');
+      profile = {...profile,display_name:name,responsible_name:name};
+      return profile;
+    },
     async sendCode(email) {
       if (!client) await initialize();
       checked(await client.auth.signInWithOtp({email, options:{shouldCreateUser:false}}),
@@ -29,8 +65,9 @@
       const result = checked(await client.auth.verifyOtp({email, token, type:'email'}),
         'El código es inválido o venció.');
       try {
-        profile = checked(await client.from('dashboard_profiles').select('display_name,role,responsible_name')
-          .eq('id',result.user.id).single(), 'Su cuenta aún no tiene un perfil activo.');
+        const access = await loadProfile(result.user);
+        if (access.shared_access) throw new Error('Seleccione el perfil y acceda con su contraseña.');
+        profile = access;
         return profile;
       } catch (error) {
         await this.disconnect();
@@ -38,10 +75,13 @@
       }
     },
     async records() {
-      const records = checked(await client.from('dashboard_commitments').select('id,body,version').order('id'),
-        'No se pudieron consultar las fichas compartidas.');
-      if (!records.length && profile.role !== 'responsable') {
-        throw new Error('La base compartida aún no tiene fichas validadas.');
+      const records = [];
+      const pageSize = 250;
+      for (let offset = 0; ; offset += pageSize) {
+        const page = checked(await client.from('dashboard_commitments').select('id,body,version')
+          .order('id').range(offset,offset+pageSize-1), 'No se pudieron consultar las fichas compartidas.');
+        records.push(...page);
+        if (page.length < pageSize) break;
       }
       versions.clear();
       for (const record of records) versions.set(record.id, record.version);
@@ -101,10 +141,30 @@
         'No se pudo guardar la asignación. Seleccione usuarios activos.');
     },
     async audit(id) {
-      let query = client.from('dashboard_audit').select('commitment_id,actor_name,actor_role,happened_at,field,old_value,new_value,operation')
+      let query = client.from('dashboard_audit').select(auditFields)
         .order('id',{ascending:false}).limit(500);
       if (id !== undefined) query = query.eq('commitment_id',id);
       return checked(await query,'No se pudo consultar el historial de auditoría.');
+    },
+    async auditFor(ids) {
+      const byCommitment = new Map();
+      const pageSize = 250;
+      for (let start = 0; start < ids.length; start += 50) {
+        let before;
+        for (;;) {
+          let query = client.from('dashboard_audit').select(auditFields)
+            .in('commitment_id',ids.slice(start,start+50)).order('id',{ascending:false}).limit(pageSize);
+          if (before !== undefined) query = query.lt('id',before);
+          const page = checked(await query,'No se pudo consultar el historial para la impresión.');
+          for (const event of page) {
+            if (!byCommitment.has(event.commitment_id)) byCommitment.set(event.commitment_id,[]);
+            byCommitment.get(event.commitment_id).push(event);
+          }
+          if (page.length < pageSize) break;
+          before = page.at(-1).id;
+        }
+      }
+      return byCommitment;
     },
     async listDocuments(id) {
       return checked(await client.storage.from('dashboard-documents').list(String(id),{limit:100}),
