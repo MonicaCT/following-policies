@@ -13,6 +13,7 @@ create table dashboard_private.operational_sessions (
   user_id uuid not null references auth.users(id) on delete cascade,
   responsible_name text not null
 );
+alter table dashboard_private.operational_sessions enable row level security;
 revoke all on schema dashboard_private from public, anon, authenticated;
 
 create function dashboard_private.protect_shared_credentials() returns trigger
@@ -265,6 +266,98 @@ begin
   from (select jsonb_object_keys(previous) as key union select jsonb_object_keys(new.body)) changes
   where (previous->changes.key) is distinct from (new.body->changes.key);
   return new;
+end
+$$;
+
+create or replace function public.dashboard_follow_instruction(p_id bigint,p_version bigint,p_index integer,p_state text,p_note text)
+returns void language plpgsql security definer set search_path=''
+as $$
+declare
+  profile public.dashboard_profiles;
+  row_data public.dashboard_commitments;
+  instruction jsonb;
+  prior text;
+  trail jsonb;
+  change_data jsonb;
+begin
+  profile := public.dashboard_effective_profile();
+  if profile.id is null or profile.role not in ('comite','ministro') then
+    raise exception using errcode='42501',message='El seguimiento corresponde al Comité y al Despacho.';
+  end if;
+  select * into row_data from public.dashboard_commitments where id=p_id for update;
+  if row_data.id is null then
+    raise exception using errcode='22023',message='No se encontró la ficha.';
+  end if;
+  if p_version is distinct from row_data.version then
+    raise exception using errcode='40001',message='Otra persona modificó esta ficha. Vuelva a abrirla.';
+  end if;
+  if p_index is null or p_index<0 then
+    raise exception using errcode='22023',message='Seleccione una instrucción.';
+  end if;
+  instruction := row_data.body#>array['instrucciones',p_index::text];
+  prior := instruction->>'estado';
+  if instruction is null or p_state is null or p_note is null or length(btrim(p_note)) not between 1 and 2000 then
+    raise exception using errcode='22023',message='Seleccione una instrucción e indique el motivo del cambio.';
+  end if;
+  if not coalesce(
+      (prior='Pendiente' and p_state='En seguimiento')
+      or (profile.role='ministro' and prior in ('Pendiente','En seguimiento') and p_state='Resuelta')
+      or (profile.role='ministro' and prior='Resuelta' and p_state='En seguimiento'),false) then
+    raise exception using errcode='42501',message='El cambio de estado no está permitido.';
+  end if;
+  trail := coalesce(instruction->'seguimiento','[]'::jsonb);
+  change_data := jsonb_build_object('anterior',prior,'estado',p_state,'nota',btrim(p_note),
+    'actor',profile.display_name,'rol',profile.role,'fecha',clock_timestamp());
+  instruction := instruction || jsonb_build_object('estado',p_state,'seguimiento',trail||jsonb_build_array(change_data));
+  update public.dashboard_commitments
+    set body=jsonb_set(body,array['instrucciones',p_index::text],instruction),version=version+1,updated_at=clock_timestamp()
+    where id=p_id;
+end
+$$;
+
+create or replace function public.dashboard_follow_instruction(p_id bigint,p_version bigint,p_index integer,p_state text,p_note text)
+returns void language plpgsql security definer set search_path=''
+as $$
+declare
+  profile public.dashboard_profiles;
+  row_data public.dashboard_commitments;
+  instruction jsonb;
+  prior text;
+  trail jsonb;
+  change_data jsonb;
+begin
+  profile := public.dashboard_effective_profile();
+  if profile.id is null or profile.role not in ('comite','ministro') then
+    raise exception using errcode='42501',message='El seguimiento corresponde al Comité y al Despacho.';
+  end if;
+  select * into row_data from public.dashboard_commitments where id=p_id for update;
+  if row_data.id is null then
+    raise exception using errcode='22023',message='No se encontró la ficha.';
+  end if;
+  if p_version is distinct from row_data.version then
+    raise exception using errcode='40001',message='Otra persona modificó esta ficha. Vuelva a abrirla.';
+  end if;
+  if p_index is null or p_index<0 then
+    raise exception using errcode='22023',message='Seleccione una instrucción.';
+  end if;
+  instruction := row_data.body#>array['instrucciones',p_index::text];
+  prior := instruction->>'estado';
+  if instruction is null or p_state is null or p_note is null or length(btrim(p_note)) not between 1 and 2000 then
+    raise exception using errcode='22023',message='Seleccione una instrucción e indique el motivo del cambio.';
+  end if;
+  if not coalesce(
+      (prior='Pendiente' and p_state='En seguimiento')
+      or (profile.role='ministro' and prior in ('Pendiente','En seguimiento') and p_state='Resuelta')
+      or (profile.role='ministro' and prior='Resuelta' and p_state='En seguimiento'),false) then
+    raise exception using errcode='42501',message='El cambio de estado no está permitido.';
+  end if;
+  trail := coalesce(instruction->'seguimiento','[]'::jsonb);
+  change_data := jsonb_build_object('anterior',prior,'estado',p_state,'nota',btrim(p_note),
+    'actor',profile.display_name,'rol',profile.role,'fecha',clock_timestamp());
+  instruction := instruction || jsonb_build_object('estado',p_state,'seguimiento',trail||jsonb_build_array(change_data));
+  update public.dashboard_commitments
+    set body=jsonb_set(body,array['instrucciones',p_index::text],instruction),version=version+1,updated_at=clock_timestamp()
+    where id=p_id;
 end
 $$;
 commit;
